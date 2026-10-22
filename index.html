@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sắp xếp chương truyện</title>
+<style>
+  :root{--bg:#121212;--card:#1e1e1e;--line:#3a3a3a;--text:#e8e8e8;--muted:#9a9a9a;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Roboto,sans-serif;padding:16px}
+  h1{font-size:22px;margin:4px 0 14px}
+  h2{font-size:18px;margin:18px 0 8px;display:flex;justify-content:space-between;align-items:center}
+  textarea,#out{width:100%;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:15px;line-height:1.55}
+  textarea{height:240px;resize:vertical;font-family:inherit}
+  #out{height:380px;overflow:auto;white-space:pre-wrap;word-wrap:break-word;position:relative}
+  #out:empty::before{content:"Kết quả sẽ hiện ở đây...";color:var(--muted)}
+  .hd{color:#ffd54f;font-weight:700;border-radius:4px;transition:background .4s}
+  .hd.flash{background:#ff9800;color:#000}
+  .btns{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 6px}
+  button{border:0;border-radius:8px;padding:10px 16px;font-size:15px;color:#fff;cursor:pointer}
+  button:active{opacity:.8}
+  .red{background:#d32f2f}.green{background:#43a047}.blue{background:#2979ff}.gray{background:#616161}.orange{background:#ef6c00}
+  .stat{color:var(--muted);font-size:14px;margin:4px 0}
+  .badge{display:inline-block;background:#2979ff;color:#fff;border-radius:20px;padding:3px 12px;font-size:14px;font-weight:600}
+  .nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .nav select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px;font-size:14px;max-width:100%}
+  #warn{display:none;background:#3b1f1f;border:1px solid #d32f2f;border-radius:10px;padding:12px;margin:10px 0}
+  #warn b{color:#ff8a80}
+  #warn ul{margin:6px 0 10px;padding-left:20px;font-size:14px}
+  #ok{display:none;background:#1b3320;border:1px solid #43a047;border-radius:10px;padding:10px 12px;margin:10px 0;font-size:14px}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#333;color:#fff;padding:10px 18px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .3s;pointer-events:none}
+</style>
+</head>
+<body>
+
+<h1>📖 Sắp xếp chương truyện</h1>
+
+<textarea id="inp" placeholder="Dán các chương truyện vào đây...&#10;Ví dụ:&#10;Chương 1: Khởi đầu&#10;Nội dung...&#10;Chương 2: ..."></textarea>
+<div class="stat" id="inStat">0 ký tự • 0 từ</div>
+
+<div class="btns">
+  <button class="red" id="bRun">Sắp xếp bố cục</button>
+  <button class="green" id="bCopy">Copy</button>
+  <button class="orange" id="bRenum">Đánh lại số chương</button>
+  <button class="blue" id="bExport">Xuất TXT</button>
+  <button class="gray" id="bClear">Xóa</button>
+</div>
+
+<div id="warn">
+  <b>⚠️ Phát hiện chương sai thứ tự</b>
+  <ul id="warnList"></ul>
+  <div class="btns" style="margin:0">
+    <button class="orange" id="bFix">Sửa thứ tự</button>
+    <button class="gray" id="bKeep">Giữ nguyên</button>
+  </div>
+</div>
+<div id="ok"></div>
+
+<h2>Kết quả: <span class="badge" id="count">0 chương</span></h2>
+
+<div class="nav">
+  <button class="gray" id="bPrev">◀</button>
+  <button class="blue" id="bNext">Xem chương ▶</button>
+  <select id="sel"><option>— Chọn chương —</option></select>
+</div>
+
+<div id="out"></div>
+<div class="stat" id="outStat">0 ký tự • 0 từ</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const inp = $('inp'), out = $('out');
+
+// Nhận diện dòng tiêu đề chương: "Chương 12: Tên", "CHƯƠNG 12 - Tên", "Chuong 12. Tên", "Chapter 12"
+const HEAD_RE = /^\s*(?:chương|chuong|chapter|chap|ch\.)\s*(\d+)\s*(?:[:：.\-–—|]\s*)?(.*)$/iu;
+
+let chapters = [];   // {num, title, body}
+let preface = '';    // phần nằm trước chương đầu tiên (nếu có)
+let navIdx = -1;
+let keepOrder = false;
+
+function countText(t){
+  const chars = t.length;
+  // chữ Hán/Nhật/Hàn: mỗi chữ tính 1 từ; còn lại tách theo khoảng trắng
+  const cjk = (t.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+  const rest = t.replace(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g,' ').match(/[\p{L}\p{N}]+/gu);
+  const words = cjk + (rest ? rest.length : 0);
+  return chars.toLocaleString('vi-VN') + ' ký tự • ' + words.toLocaleString('vi-VN') + ' từ';
+}
+
+function cleanBody(lines){
+  // bỏ khoảng trắng thừa, gộp nhiều dòng trống liên tiếp thành 1
+  const res = [];
+  for (let l of lines){
+    l = l.replace(/\s+$/,'').replace(/^[ \t]+/,'');
+    if (l === '' && (res.length === 0 || res[res.length-1] === '')) continue;
+    res.push(l);
+  }
+  while (res.length && res[res.length-1] === '') res.pop();
+  return res.join('\n');
+}
+
+function parse(text){
+  text = text.normalize('NFC').replace(/\r\n?/g,'\n');
+  // Tách tiêu đề chương bị dính liền vào cuối câu trước, vd: "...地步.Chương 8342: Tên"
+  text = text.replace(/([^\n])[ \t]*((?:Chương|CHƯƠNG|Chuong|CHUONG|Chapter|CHAPTER)[ \t]*\d+[ \t]*[:：\-–—])/gu, '$1\n$2');
+  const lines = text.split('\n');
+  const list = []; let pre = []; let cur = null;
+  for (const line of lines){
+    const m = line.match(HEAD_RE);
+    if (m){
+      if (cur) list.push(cur);
+      cur = { num: parseInt(m[1],10), title: m[2].trim(), lines: [] };
+    } else if (cur) cur.lines.push(line);
+    else pre.push(line);
+  }
+  if (cur) list.push(cur);
+  return {
+    preface: cleanBody(pre),
+    chapters: list.map(c => ({ num:c.num, title:c.title, body:cleanBody(c.lines) }))
+  };
+}
+
+function headText(c){ return 'Chương ' + c.num + (c.title ? ': ' + c.title : ''); }
+
+function buildText(){
+  const parts = [];
+  if (preface) parts.push(preface);
+  chapters.forEach(c => parts.push(headText(c) + '\n\n' + c.body));
+  return parts.join('\n\n');
+}
+
+function checkOrder(){
+  const issues = [];
+  for (let i = 1; i < chapters.length; i++){
+    const a = chapters[i-1].num, b = chapters[i].num;
+    if (b < a) issues.push(`Chương ${b} đang nằm sau Chương ${a} (vị trí ${i+1})`);
+    else if (b === a) issues.push(`Chương ${b} bị trùng (vị trí ${i} và ${i+1})`);
+  }
+  // chương bị thiếu
+  if (chapters.length){
+    const nums = new Set(chapters.map(c=>c.num));
+    const min = Math.min(...nums), max = Math.max(...nums), miss = [];
+    for (let n = min; n <= max && miss.length < 30; n++) if (!nums.has(n)) miss.push(n);
+    if (miss.length) issues.push('Thiếu chương: ' + miss.join(', ') + (miss.length>=30?'...':''));
+  }
+  return issues;
+}
+
+function isSorted(){
+  for (let i = 1; i < chapters.length; i++) if (chapters[i].num < chapters[i-1].num) return false;
+  return true;
+}
+
+function render(){
+  out.innerHTML = '';
+  const sel = $('sel');
+  sel.innerHTML = '<option value="">— Chọn chương —</option>';
+  if (preface){ out.appendChild(document.createTextNode(preface + '\n\n')); }
+  chapters.forEach((c,i) => {
+    const h = document.createElement('span');
+    h.className = 'hd'; h.id = 'ch' + i; h.textContent = headText(c);
+    out.appendChild(h);
+    out.appendChild(document.createTextNode('\n\n' + c.body + (i < chapters.length-1 ? '\n\n' : '')));
+    const o = document.createElement('option');
+    o.value = i; o.textContent = headText(c).slice(0,60);
+    sel.appendChild(o);
+  });
+  $('count').textContent = chapters.length + ' chương';
+  $('outStat').textContent = countText(buildText());
+  navIdx = -1;
+  $('bNext').textContent = 'Xem chương ▶';
+
+  // cảnh báo thứ tự
+  const issues = checkOrder();
+  const orderWrong = !isSorted();
+  if (issues.length && !keepOrder){
+    $('warnList').innerHTML = issues.map(s => '<li>' + s + '</li>').join('');
+    $('bFix').style.display = orderWrong ? '' : 'none';
+    $('warn').style.display = 'block'; $('ok').style.display = 'none';
+  } else {
+    $('warn').style.display = 'none';
+    if (chapters.length){
+      $('ok').style.display = 'block';
+      const range = `Nhận diện ${chapters.length} chương (Chương ${chapters[0].num} → Chương ${chapters[chapters.length-1].num}). `;
+      $('ok').textContent = keepOrder && issues.length ? '⏸ ' + range + 'Đang giữ nguyên thứ tự như bạn dán.' : '✅ ' + range + 'Thứ tự hợp lệ.';
+    } else $('ok').style.display = 'none';
+  }
+}
+
+function run(){
+  const r = parse(inp.value);
+  chapters = r.chapters; preface = r.preface;
+  if (!chapters.length && inp.value.trim()) toast('Không tìm thấy dòng "Chương N" nào');
+  render();
+}
+
+function goTo(i){
+  if (!chapters.length) return toast('Chưa có chương nào');
+  navIdx = (i + chapters.length) % chapters.length;
+  const el = $('ch' + navIdx);
+  out.scrollTop = el.offsetTop - 8;
+  out.scrollIntoView({behavior:'smooth', block:'start'});
+  document.querySelectorAll('.hd.flash').forEach(e=>e.classList.remove('flash'));
+  el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 1200);
+  $('bNext').textContent = `Chương ${navIdx+1}/${chapters.length} ▶`;
+  $('sel').value = navIdx;
+}
+
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.style.opacity = 1;
+  clearTimeout(t._h); t._h = setTimeout(()=>t.style.opacity = 0, 1800);
+}
+
+// ---- sự kiện ----
+let deb;
+inp.addEventListener('input', () => {
+  $('inStat').textContent = countText(inp.value);
+  keepOrder = false;
+  clearTimeout(deb); deb = setTimeout(run, 400);
+});
+
+$('bRun').onclick = () => { keepOrder = false; run(); if (chapters.length) toast('Đã sắp xếp ' + chapters.length + ' chương'); };
+
+$('bFix').onclick = () => {
+  chapters = chapters.map((c,i)=>({...c,_i:i})).sort((a,b)=>a.num-b.num || a._i-b._i).map(({_i,...c})=>c);
+  inp.value = buildText();
+  $('inStat').textContent = countText(inp.value);
+  keepOrder = false; render(); toast('Đã đưa các chương về đúng vị trí');
+};
+
+$('bRenum').onclick = () => {
+  if (!chapters.length) return toast('Chưa có chương nào');
+  const first = chapters[0].num;
+  let v = prompt(`Nhập số chương bắt đầu (hiện tại: Chương ${first}).\nCác chương sẽ được đánh số liên tiếp theo thứ tự đang hiển thị.`, first);
+  if (v === null) return; // bấm Hủy
+  v = v.trim();
+  if (!/^\d+$/.test(v)) return toast('Vui lòng nhập một số nguyên, vd: 5000');
+  const start = parseInt(v, 10);
+  chapters.forEach((c, i) => c.num = start + i);
+  inp.value = buildText();
+  $('inStat').textContent = countText(inp.value);
+  keepOrder = false; render();
+  toast(`Đã đánh lại: Chương ${start} → Chương ${start + chapters.length - 1}`);
+};
+
+$('bKeep').onclick =() => { keepOrder = true; render(); };
+
+$('bNext').onclick = () => goTo(navIdx + 1);
+$('bPrev').onclick = () => goTo(navIdx < 0 ? chapters.length - 1 : navIdx - 1);
+$('sel').onchange = e => { if (e.target.value !== '') goTo(+e.target.value); };
+
+$('bCopy').onclick = async () => {
+  const t = buildText(); if (!t) return toast('Chưa có nội dung');
+  try { await navigator.clipboard.writeText(t); }
+  catch { const a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select(); document.execCommand('copy'); a.remove(); }
+  toast('Đã copy');
+};
+
+$('bExport').onclick = () => {
+  const t = buildText(); if (!t) return toast('Chưa có nội dung');
+  let def = 'Chương';
+  if (chapters.length){
+    const nums = chapters.map(c=>c.num);
+    def = 'Chương ' + Math.min(...nums) + ' - ' + Math.max(...nums);
+  }
+  let name = prompt('Đặt tên file (để trống rồi ấn OK sẽ lấy tên mặc định):', '');
+  if (name === null) return; // bấm Hủy
+  name = name.trim() || def;
+  name = name.replace(/[\\/:*?"<>|]/g,'_');
+  if (!/\.txt$/i.test(name)) name += '.txt';
+  const blob = new Blob(['\uFEFF' + t], {type:'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  toast('Đã xuất: ' + name);
+};
+
+$('bClear').onclick = () => {
+  if (inp.value && !confirm('Xóa toàn bộ nội dung?')) return;
+  inp.value = ''; chapters = []; preface = ''; keepOrder = false;
+  $('inStat').textContent = countText('');
+  render();
+};
+
+render();
+</script>
+</body>
+</html>
